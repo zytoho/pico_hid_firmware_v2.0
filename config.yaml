@@ -1,0 +1,42 @@
+# 高性能模拟人类行为控制系统 - 配置文件
+
+# 串口配置 (Pico 连接)
+serial:
+  port: "/dev/cu.usbserial-BG03FPHM"  # 当前 macOS 串口, Windows: COM3
+  baudrate: 115200
+  ack_timeout: 0.1  # ACK 等待超时 (秒)
+
+# 视觉流水线配置
+vision:
+  model_path: "yolov8n.pt"  # YOLO 模型路径
+  window_title: "Moonlight"  # 目标窗口标题 (用于定位截图区域)
+  target_region: null  # 自定义截图区域 [x, y, width, height], null = 全屏
+  fps_limit: 30  # 帧率上限
+
+# 宏观 Agent 配置
+agent:
+  fatigue_time_constant: 120.0  # 疲劳时间常数 (分钟), 120分钟后达到 ~63%
+  focus_base: 0.85  # 基础注意力水平
+  focus_oscillation_period: 200.0  # 注意力波动周期 (秒)
+  focus_oscillation_amplitude: 0.15  # 注意力波动幅度
+  micro_break_probability: 0.02  # 每个评估周期的微休息概率
+  micro_break_duration_range: [5.0, 20.0]  # 微休息时长范围 (秒)
+  stuck_timeout: 30.0  # 卡住检测超时 (秒)
+  max_consecutive_failures: 3  # 连续失败次数阈值
+
+# 行为配置
+behavior:
+  typing_wpm: 60.0  # 打字速度 (words per minute)
+  action_interval_base: 1.0  # 操作停顿基础间隔 (秒)
+  click_delay_range: [0.06, 0.12]  # 点击保持时间范围 (秒)
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "control_system.log"
+
+# LLM 异常处理配置 (可选, 仅在异常时调用)
+llm:
+  enabled: true
+  model_name: "mlx-community/Qwen2.5-7B-Instruct-4bit"
+  use_mlx: true  # true = Apple MLX, false = transformers
