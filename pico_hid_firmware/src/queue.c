@@ -6,6 +6,7 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/timer.h"
+#include "hardware/sync.h"
 
 // ============================================================================
 // Global Queue Instance
@@ -23,6 +24,16 @@ static struct {
 
 static uint8_t queue_held_keycode = 0;
 
+// Set by queue_clear (UART IRQ context); the release itself is sent from
+// queue_tick once the HID endpoint is ready.
+static volatile bool queue_release_pending = false;
+
+typedef enum {
+    KEY_EMIT_SENT = 0,
+    KEY_EMIT_RETRY,
+    KEY_EMIT_ABORTED
+} key_emit_t;
+
 // ============================================================================
 // Queue Initialization
 // ============================================================================
@@ -35,6 +46,7 @@ void queue_init(void) {
     queue.high_watermark = QUEUE_HIGH_WATERMARK;
     queue.high_watermark_triggered = false;
     queue_held_keycode = 0;
+    queue_release_pending = false;
     
     // Clear all items
     memset(queue.items, 0, sizeof(queue.items));
@@ -116,8 +128,7 @@ bool queue_pop(queue_item_t* item) {
 // Queue Clear
 // ============================================================================
 void queue_clear(void) {
-    hid_keyboard_release();
-    queue_held_keycode = 0;
+    queue_release_pending = true;
     exec_state.executing = false;
     exec_state.step = 0;
     queue.head = 0;
@@ -177,6 +188,44 @@ static void check_queue_low(void) {
     }
 }
 
+// Interrupts are masked so a queue_clear from the UART IRQ cannot land between
+// the pending check and the report.
+static key_emit_t queue_emit_press(uint8_t keycode, uint8_t modifier) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    if (queue_release_pending) {
+        restore_interrupts(irq_state);
+        return KEY_EMIT_ABORTED;
+    }
+    if (!hid_ready()) {
+        restore_interrupts(irq_state);
+        return KEY_EMIT_RETRY;
+    }
+    if (modifier > 0) {
+        hid_keyboard_press_mod(keycode, modifier);
+    } else {
+        hid_keyboard_press(keycode);
+    }
+    queue_held_keycode = keycode;
+    restore_interrupts(irq_state);
+    return KEY_EMIT_SENT;
+}
+
+static key_emit_t queue_emit_release(void) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    if (queue_release_pending) {
+        restore_interrupts(irq_state);
+        return KEY_EMIT_ABORTED;
+    }
+    if (!hid_ready()) {
+        restore_interrupts(irq_state);
+        return KEY_EMIT_RETRY;
+    }
+    hid_keyboard_release();
+    queue_held_keycode = 0;
+    restore_interrupts(irq_state);
+    return KEY_EMIT_SENT;
+}
+
 // Helper: Execute keyboard tap
 static void execute_key_tap(queue_item_t* item, uint8_t profile_id) {
     const profile_t* prof = profile_get(profile_id);
@@ -195,12 +244,9 @@ static void execute_key_tap(queue_item_t* item, uint8_t profile_id) {
     
     // Step 0: Key press
     if (exec_state.step == 0) {
-        if (modifier > 0) {
-            hid_keyboard_press_mod(keycode, modifier);
-        } else {
-            hid_keyboard_press(keycode);
+        if (queue_emit_press(keycode, modifier) != KEY_EMIT_SENT) {
+            return;
         }
-        queue_held_keycode = keycode;
         exec_state.step = 1;
         exec_state.step_start_us = time_us_32();
         exec_state.delay_us = hold_ms * 1000;
@@ -209,23 +255,26 @@ static void execute_key_tap(queue_item_t* item, uint8_t profile_id) {
     else if (exec_state.step == 1) {
         uint32_t elapsed = time_us_32() - exec_state.step_start_us;
         if (elapsed >= exec_state.delay_us) {
-            hid_keyboard_release();
-            queue_held_keycode = 0;
+            if (queue_emit_release() != KEY_EMIT_SENT) {
+                return;
+            }
             exec_state.executing = false;
         }
     }
 }
 
 static void execute_key_down(queue_item_t* item) {
-    hid_keyboard_press(item->action);
-    queue_held_keycode = item->action;
+    if (queue_emit_press(item->action, 0) != KEY_EMIT_SENT) {
+        return;
+    }
     exec_state.executing = false;
 }
 
 static void execute_key_up(queue_item_t* item) {
     if (queue_held_keycode == item->action) {
-        hid_keyboard_release();
-        queue_held_keycode = 0;
+        if (queue_emit_release() != KEY_EMIT_SENT) {
+            return;
+        }
     }
     exec_state.executing = false;
 }
@@ -321,6 +370,15 @@ static void execute_markov_pause(queue_item_t* item, uint8_t profile_id) {
 }
 
 void queue_tick(void) {
+    if (queue_release_pending) {
+        if (hid_ready()) {
+            hid_keyboard_release();
+            queue_held_keycode = 0;
+            queue_release_pending = false;
+        }
+        return;
+    }
+
     if (queue.state != QUEUE_STATE_RUNNING) {
         return;
     }
