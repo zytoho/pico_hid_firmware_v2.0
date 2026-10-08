@@ -12,6 +12,17 @@
 // ============================================================================
 static exec_queue_t queue;
 
+// Execution state machine
+static struct {
+    bool executing;
+    uint8_t step;
+    uint32_t step_start_us;
+    uint32_t delay_us;
+    queue_item_t current_item;
+} exec_state = {0};
+
+static uint8_t queue_held_keycode = 0;
+
 // ============================================================================
 // Queue Initialization
 // ============================================================================
@@ -23,6 +34,7 @@ void queue_init(void) {
     queue.low_watermark = QUEUE_LOW_WATERMARK;
     queue.high_watermark = QUEUE_HIGH_WATERMARK;
     queue.high_watermark_triggered = false;
+    queue_held_keycode = 0;
     
     // Clear all items
     memset(queue.items, 0, sizeof(queue.items));
@@ -104,6 +116,10 @@ bool queue_pop(queue_item_t* item) {
 // Queue Clear
 // ============================================================================
 void queue_clear(void) {
+    hid_keyboard_release();
+    queue_held_keycode = 0;
+    exec_state.executing = false;
+    exec_state.step = 0;
     queue.head = 0;
     queue.tail = 0;
     queue.state = QUEUE_STATE_IDLE;
@@ -137,15 +153,6 @@ queue_state_t queue_get_state(void) {
 // ============================================================================
 // Queue Tick - Non-blocking Execution Engine
 // ============================================================================
-
-// Execution state machine
-static struct {
-    bool executing;
-    uint8_t step;
-    uint32_t step_start_us;
-    uint32_t delay_us;
-    queue_item_t current_item;
-} exec_state = {0};
 
 // Helper: Get profile parameter with RNG humanization
 static int16_t get_humanized_delay(int16_t base_ms, uint8_t profile_id) {
@@ -193,6 +200,7 @@ static void execute_key_tap(queue_item_t* item, uint8_t profile_id) {
         } else {
             hid_keyboard_press(keycode);
         }
+        queue_held_keycode = keycode;
         exec_state.step = 1;
         exec_state.step_start_us = time_us_32();
         exec_state.delay_us = hold_ms * 1000;
@@ -202,9 +210,24 @@ static void execute_key_tap(queue_item_t* item, uint8_t profile_id) {
         uint32_t elapsed = time_us_32() - exec_state.step_start_us;
         if (elapsed >= exec_state.delay_us) {
             hid_keyboard_release();
+            queue_held_keycode = 0;
             exec_state.executing = false;
         }
     }
+}
+
+static void execute_key_down(queue_item_t* item) {
+    hid_keyboard_press(item->action);
+    queue_held_keycode = item->action;
+    exec_state.executing = false;
+}
+
+static void execute_key_up(queue_item_t* item) {
+    if (queue_held_keycode == item->action) {
+        hid_keyboard_release();
+        queue_held_keycode = 0;
+    }
+    exec_state.executing = false;
 }
 
 // Helper: Execute mouse move
@@ -329,6 +352,12 @@ void queue_tick(void) {
         switch (exec_state.current_item.type) {
             case QUEUE_ITEM_KEY_TAP:
                 execute_key_tap(&exec_state.current_item, queue.active_profile_id);
+                break;
+            case QUEUE_ITEM_KEY_DOWN:
+                execute_key_down(&exec_state.current_item);
+                break;
+            case QUEUE_ITEM_KEY_UP:
+                execute_key_up(&exec_state.current_item);
                 break;
             case QUEUE_ITEM_MOUSE_TO:
                 execute_mouse_move(&exec_state.current_item, queue.active_profile_id);

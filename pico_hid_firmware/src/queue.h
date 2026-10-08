@@ -25,6 +25,8 @@
 #define QUEUE_ITEM_WAIT         0x06
 #define QUEUE_ITEM_MARKOV_PAUSE 0x07
 #define QUEUE_ITEM_LOOP         0x08
+#define QUEUE_ITEM_KEY_DOWN     0x09
+#define QUEUE_ITEM_KEY_UP       0x0A
 
 // ============================================================================
 // Queue Item Structure (10 bytes)
