@@ -79,8 +79,12 @@
 // Initialize protocol state
 void protocol_init(void);
 
-// Process received byte (call from UART RX interrupt)
+// Process received byte (call from UART RX interrupt).
+// Valid frames are queued; they are not executed in the interrupt.
 void protocol_process_byte(uint8_t byte);
+
+// Execute queued frames on the main loop. HID and sleep must not run in the UART ISR.
+void protocol_poll(void);
 
 // Send response frame (CMD | 0x80)
 void protocol_send_response(uint8_t cmd, const uint8_t* payload, uint8_t len);

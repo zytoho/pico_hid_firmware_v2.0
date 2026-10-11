@@ -2,6 +2,7 @@
 // Binary frame protocol with CRC-16/MODBUS
 
 #include "protocol.h"
+#include "hardware/sync.h"
 #include "hardware/uart.h"
 #include <string.h>
 
@@ -49,6 +50,35 @@ static uint8_t rx_cmd = 0;
 static uint8_t rx_payload[FRAME_MAX_PAYLOAD];
 static uint8_t rx_payload_idx = 0;
 
+// Completed frames wait here until the main loop calls protocol_poll().
+// cmd_dispatch sleeps and talks to USB; doing that inside the UART ISR wedges the chip.
+#define RX_FRAME_QUEUE 16
+
+typedef struct {
+    uint8_t cmd;
+    uint8_t len;
+    uint8_t payload[FRAME_MAX_PAYLOAD];
+} rx_frame_t;
+
+static rx_frame_t rx_frames[RX_FRAME_QUEUE];
+static volatile uint8_t rx_frame_head = 0;
+static volatile uint8_t rx_frame_tail = 0;
+
+static bool rx_frame_push(uint8_t cmd, const uint8_t* payload, uint8_t len) {
+    uint8_t next = (uint8_t)((rx_frame_head + 1) % RX_FRAME_QUEUE);
+    if (next == rx_frame_tail) {
+        return false;
+    }
+    rx_frames[rx_frame_head].cmd = cmd;
+    rx_frames[rx_frame_head].len = len;
+    if (len > 0 && payload != NULL) {
+        memcpy(rx_frames[rx_frame_head].payload, payload, len);
+    }
+    __dmb();
+    rx_frame_head = next;
+    return true;
+}
+
 // ============================================================================
 // Protocol Implementation
 // ============================================================================
@@ -56,6 +86,8 @@ static uint8_t rx_payload_idx = 0;
 void protocol_init(void) {
     parse_state = PARSE_WAIT_SOH1;
     rx_payload_idx = 0;
+    rx_frame_head = 0;
+    rx_frame_tail = 0;
 }
 
 void protocol_process_byte(uint8_t byte) {
@@ -128,8 +160,10 @@ void protocol_process_byte(uint8_t byte) {
             uint16_t calculated_crc = crc16_modbus(crc_buffer, 2 + rx_length);
             
             if (received_crc == calculated_crc) {
-                // Valid frame, dispatch command
-                cmd_dispatch(rx_cmd, rx_payload, rx_length);
+                if (!rx_frame_push(rx_cmd, rx_payload, rx_length)) {
+                    uint8_t error_payload[] = {ERR_QUEUE_FULL, 0x00};
+                    protocol_send_event(EVT_ERROR, error_payload, 2);
+                }
             } else {
                 // CRC error
                 uint8_t error_payload[] = {ERR_BAD_CRC, 0x00};
@@ -140,6 +174,15 @@ void protocol_process_byte(uint8_t byte) {
             parse_state = PARSE_WAIT_SOH1;
             break;
         }
+    }
+}
+
+void protocol_poll(void) {
+    while (rx_frame_tail != rx_frame_head) {
+        rx_frame_t* frame = &rx_frames[rx_frame_tail];
+        cmd_dispatch(frame->cmd, frame->payload, frame->len);
+        __dmb();
+        rx_frame_tail = (uint8_t)((rx_frame_tail + 1) % RX_FRAME_QUEUE);
     }
 }
 

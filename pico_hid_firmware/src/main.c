@@ -361,6 +361,7 @@ int main(void) {
     // Main loop
     while (1) {
         tud_task();
+        protocol_poll();
         queue_tick();
         
         // LED: solid ON when USB mounted
