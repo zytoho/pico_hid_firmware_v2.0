@@ -1,9 +1,39 @@
+# Pico / CMake 构建产物
 build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
 *.uf2
 *.elf
 *.bin
 *.hex
 *.map
 *.dis
-.DS_Store
+*.o
+*.obj
+*.a
+*.d
+*.lst
+
+# Python 构建 / 缓存
 venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+dist/
+*.egg
+
+# 运行产物
+*.log
+
+# OS
+.DS_Store
