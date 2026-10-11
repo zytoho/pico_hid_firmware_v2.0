@@ -6,3 +6,4 @@ build/
 *.map
 *.dis
 .DS_Store
+venv/
